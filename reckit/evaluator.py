@@ -8,6 +8,8 @@ from reckit.dataiterator import DataIterator
 from reckit.util import typeassert
 from reckit.cython import eval_score_matrix
 from reckit.cython import float_type, is_ndarray
+import pandas as pd
+from collections import OrderedDict
 
 metric_dict = {"Precision": 1, "Recall": 2, "MAP": 3, "NDCG": 4, "MRR": 5}
 re_metric_dict = {value: key for key, value in metric_dict.items()}
@@ -36,7 +38,7 @@ class Evaluator(object):
 
     @typeassert(user_train_dict=(dict, None), user_test_dict=dict)
     def __init__(self, user_train_dict, user_test_dict,
-                 metric=None, top_k=50, batch_size=1024, num_thread=8):
+                 metric=None, top_k=50, batch_size=1024, num_thread=8,group_view=None):
         """Initializes a new `Evaluator` instance.
 
         Args:
@@ -90,6 +92,8 @@ class Evaluator(object):
         else:
             self.top_show = np.sort(top_k)
 
+        self.group_view = group_view
+
     @typeassert(user_train_dict=(dict, None))
     def set_train_data(self, user_train_dict=None):
         self.user_pos_train = user_train_dict if user_train_dict is not None else dict()
@@ -112,9 +116,8 @@ class Evaluator(object):
         metric = '\t'.join(metrics_show)
         return "metrics:\t%s" % metric
 
-    def evaluate(self, model, test_users=None):
-        """Evaluate `model`.
-
+    def _evaluate(self, model, test_users=None):
+        """Evaluate `model`. This function is modified from `v0.2.4 evaluate`.
         Args:
             model: The model need to be evaluated. This model must have
                 a method `predict(self, users)`, where the argument
@@ -122,22 +125,13 @@ class Evaluator(object):
                 contains `users` rating/ranking scores on all items.
             test_users: The users will be used to test.
                 Default is None and means test all users in user_pos_test.
-
         Returns:
             str: A single-line string consist of all results, such as
                 `"0.18663847    0.11239596    0.35824192    0.21479650"`.
         """
-        # B: batch size
-        # N: the number of items
-        if not hasattr(model, "predict"):
-            raise AttributeError("'model' must have attribute 'predict'.")
-        # elif model.predict.__code__.co_argcount != 2:
-        #     raise AttributeError("'model.predict' must have 1 parameter.")
-
         test_users = test_users if test_users is not None else list(self.user_pos_test.keys())
         if not isinstance(test_users, (list, tuple, set, np.ndarray)):
             raise TypeError("'test_user' must be a list, tuple, set or numpy array!")
-
         test_users = DataIterator(test_users, batch_size=self.batch_size, shuffle=False, drop_last=False)
         batch_result = []
         for batch_users in test_users:
@@ -166,3 +160,53 @@ class Evaluator(object):
         final_result = np.reshape(final_result, newshape=[-1])
         buf = '\t'.join([("%.8f" % x).ljust(12) for x in final_result])
         return buf
+
+    def evaluate(self, model, test_users=None):
+        """Evaluate `model`.
+
+        Args:
+            model: The model need to be evaluated. This model must have
+                a method `predict(self, users)`, where the argument
+                `users` is a list of users and the return is a 2-D array that
+                contains `users` rating/ranking scores on all items.
+            test_users: The users will be used to test.
+                Default is None and means test all users in user_pos_test.
+
+        Returns:
+            str: A single-line string consist of all results, such as
+                `"0.18663847    0.11239596    0.35824192    0.21479650"`.
+        """
+        # B: batch size
+        # N: the number of items
+        if not hasattr(model, "predict"):
+            raise AttributeError("'model' must have attribute 'predict'.")
+        
+        # add new group_view
+        if self.group_view is not None:
+            group_list = [0] + self.group_view
+            group_info = [("(%d,%d]:" % (g_l, g_h)).ljust(12)
+                          for g_l, g_h in zip(group_list[:-1], group_list[1:])]
+
+            all_test_user = list(self.user_pos_test.keys())
+            num_interaction = [len(self.user_pos_train[u]) for u in all_test_user]
+            group_idx = np.searchsorted(group_list[1:], num_interaction)
+            user_group = pd.DataFrame(list(zip(all_test_user, group_idx)),
+                                      columns=["user", "group"])
+            grouped = user_group.groupby(by=["group"])
+
+            self.grouped_user = OrderedDict()
+            for idx, users in grouped:
+                if idx < len(group_info):
+                    self.grouped_user[group_info[idx]] = users["user"].tolist()
+
+            if not self.grouped_user:
+                raise ValueError("The splitting of user groups is not suitable!")
+            result_to_show = ""
+            for group, users in self.grouped_user.items():
+                tmp_result = self._evaluate(model, users)
+                result_to_show = "%s\n%s\t%s" % (result_to_show, group, tmp_result)
+
+            return result_to_show
+        else:
+            buf = self._evaluate(model, test_users)
+            return buf

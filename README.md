@@ -2,6 +2,8 @@
 
 # RecKit
 
+**This forked version**: Fixes several bugs and adds support for the latest Python 3.12+ and Torch 2.0+.
+
 ![GitHub release (latest by date including pre-releases)](https://img.shields.io/github/v/release/ZhongchuanSun/reckit?include_prereleases)
 ![PyPI](https://img.shields.io/pypi/v/reckit)
 ![Travis (.com)](https://img.shields.io/travis/com/ZhongchuanSun/reckit?label=Travis%20CI&logo=Travis)
