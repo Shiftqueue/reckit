@@ -9,6 +9,7 @@ import pandas as pd
 from reckit.util import typeassert
 from reckit.logger import Logger
 from collections import OrderedDict
+import warnings
 
 
 class Preprocessor(object):
@@ -260,7 +261,7 @@ class Preprocessor(object):
         for user, u_data in user_grouped:
             if not by_time:
                 u_data = u_data.sample(frac=1)
-            train_end = -(valid+test)
+            train_end = -(valid + test)
             train_data.append(u_data.iloc[:train_end])
             if valid != 0:
                 test_begin = train_end + valid
@@ -269,6 +270,77 @@ class Preprocessor(object):
                 test_begin = train_end
             test_data.append(u_data.iloc[test_begin:])
 
+        self.train_data = pd.concat(train_data, ignore_index=True)
+        if valid != 0:
+            self.valid_data = pd.concat(valid_data, ignore_index=True)
+        self.test_data = pd.concat(test_data, ignore_index=True)
+
+    @typeassert(train=int, valid=int, test=int, target_behavior=int)
+    def split_data_by_behavior(self, train=1, valid=1, test=1, target_behavior=0):
+        """
+
+        Split user interaction data into train/valid/test sets based on the target behavior.
+
+        For each user, only the most recent (train + valid + test) interactions that end with a target behavior
+        will be retained. Each subset ends at a target behavior instance, ensuring that:
+        - the test set ends with the last target behavior,
+        - the validation set ends with the second-to-last target behavior (if valid > 0),
+        - the training set ends with the (valid + test + 1)-th target behavior from the end (if train > 0).
+
+        Interactions before the training split point or users with insufficient target behaviors are discarded.
+
+        Parameters:
+            train (int): Number of target behavior segments to include in the training set.
+            valid (int): Number of target behavior segments to include in the validation set.
+            test (int): Number of target behavior segments to include in the test set.
+            target_behavior (int): The behavior (rating value) to use as the target for splitting.
+
+        Author:
+            xinhang xu (xxhswift@outlook.com)
+        """
+
+        # Store split configuration
+        self._config["split_by"] = "behavior"
+        self._config["valid"] = str(valid)
+        self._config["test"] = str(test)
+        self._split_manner = "behavior"
+
+        # Sort all data by user and time
+        print("splitting data by behavior...")
+        sort_key = [self._USER, self._TIME]
+        self.all_data.sort_values(by=sort_key, inplace=True)
+
+        train_data = []
+        valid_data = []
+        test_data = []
+
+        target_rating = target_behavior  # The behavior to split on (e.g., rating == 5)
+
+        user_grouped = self.all_data.groupby(by=[self._USER])
+
+        for user, u_data in user_grouped:
+            u_data = u_data.sort_values(by=self._TIME).reset_index(drop=True)
+
+            # Find all indices of target behavior interactions
+            target_indices = u_data[u_data[self._RATING] == target_rating].index.tolist()
+
+            if len(target_indices) < (train + valid + test):
+                # Skip this user if they do not have enough target behaviors
+                warnings.warn(f"User: {user[0]} does not have {train + valid + test} target behavior(s), skipping.")
+                continue
+
+            # Select the split points based on the last few target behaviors
+            test_idx = target_indices[-1]
+            valid_idx = target_indices[-2] if valid >= 1 else None
+            train_idx = target_indices[-(valid + test + 1)] if (valid + test) >= 1 else None
+
+            if train_idx is not None:
+                train_data.append(u_data.iloc[:train_idx + 1])  # Include the split point
+            if valid_idx is not None:
+                valid_data.append(u_data.iloc[:valid_idx + 1])
+            test_data.append(u_data.iloc[:test_idx + 1])
+
+        # Concatenate subsets
         self.train_data = pd.concat(train_data, ignore_index=True)
         if valid != 0:
             self.valid_data = pd.concat(valid_data, ignore_index=True)
@@ -292,7 +364,7 @@ class Preprocessor(object):
         filename = os.path.join(dir_path, filename)
         sep = "\t"  # self._config["sep"]
         if self.all_data is not None:
-            self.all_data.to_csv(filename+".all", header=False, index=False, sep=sep)
+            self.all_data.to_csv(filename + ".all", header=False, index=False, sep=sep)
         if self.train_data is not None:
             self.train_data.to_csv(filename + ".train", header=False, index=False, sep=sep)
         if self.valid_data is not None:
@@ -308,19 +380,19 @@ class Preprocessor(object):
         user_num = len(self.all_data[self._USER].unique())
         item_num = len(self.all_data[self._ITEM].unique())
         rating_num = len(self.all_data)
-        sparsity = 1-1.0*rating_num/(user_num*item_num)
+        sparsity = 1 - 1.0 * rating_num / (user_num * item_num)
 
         # write log file
-        logger = Logger(filename+".info")
+        logger = Logger(filename + ".info")
         data_info = os.linesep.join(["%s = %s" % (key, value) for key, value in self._config.items()])
-        logger.info(os.linesep+data_info)
+        logger.info(os.linesep + data_info)
         logger.info("Data statistic:")
         logger.info("The number of users: %d" % user_num)
         logger.info("The number of items: %d" % item_num)
         logger.info("The number of ratings: %d" % rating_num)
-        logger.info("Average actions of users: %.2f" % (1.0*rating_num/user_num))
-        logger.info("Average actions of items: %.2f" % (1.0*rating_num/item_num))
-        logger.info("The sparsity of the dataset: %f%%" % (sparsity*100))
+        logger.info("Average actions of users: %.2f" % (1.0 * rating_num / user_num))
+        logger.info("Average actions of items: %.2f" % (1.0 * rating_num / item_num))
+        logger.info("The sparsity of the dataset: %f%%" % (sparsity * 100))
 
 
 if __name__ == "__main__":
